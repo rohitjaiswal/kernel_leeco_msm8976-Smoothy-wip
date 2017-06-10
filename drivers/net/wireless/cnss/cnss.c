@@ -1452,6 +1452,15 @@ static int cnss_wlan_runtime_resume(struct device *dev)
 	return ret;
 }
 
+static int cnss_wlan_runtime_idle(struct device *dev)
+{
+	pr_debug("cnss: runtime idle\n");
+
+	pm_request_autosuspend(dev);
+
+	return -EBUSY;
+}
+
 static DECLARE_RWSEM(cnss_pm_sem);
 
 static int cnss_pm_notify(struct notifier_block *b,
@@ -1486,7 +1495,7 @@ MODULE_DEVICE_TABLE(pci, cnss_wlan_pci_id_table);
 static const struct dev_pm_ops cnss_wlan_pm_ops = {
 	SET_SYSTEM_SLEEP_PM_OPS(cnss_wlan_pci_suspend, cnss_wlan_pci_resume)
 	SET_RUNTIME_PM_OPS(cnss_wlan_runtime_suspend, cnss_wlan_runtime_resume,
-			NULL)
+			cnss_wlan_runtime_idle)
 };
 #endif
 
@@ -2972,12 +2981,14 @@ void cnss_runtime_init(struct device *dev, int auto_delay)
 	pm_runtime_allow(dev);
 	pm_runtime_mark_last_busy(dev);
 	pm_runtime_put_noidle(dev);
+	pm_suspend_ignore_children(dev, true);
 }
 EXPORT_SYMBOL(cnss_runtime_init);
 
 void cnss_runtime_exit(struct device *dev)
 {
 	pm_runtime_get_noresume(dev);
+	pm_runtime_set_active(dev);
 }
 EXPORT_SYMBOL(cnss_runtime_exit);
 module_init(cnss_initialize);

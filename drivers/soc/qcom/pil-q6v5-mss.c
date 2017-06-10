@@ -69,7 +69,6 @@ static void log_modem_sfr(void)
 static void restart_modem(struct modem_data *drv)
 {
 	log_modem_sfr();
-	drv->ignore_errors = true;
 	subsystem_restart_dev(drv->subsys);
 }
 
@@ -78,7 +77,7 @@ static irqreturn_t modem_err_fatal_intr_handler(int irq, void *dev_id)
 	struct modem_data *drv = subsys_to_drv(dev_id);
 
 	/* Ignore if we're the one that set the force stop GPIO */
-	if (drv->crash_shutdown)
+	if (drv->crash_shutdown || subsys_get_crash_status(drv->subsys))
 		return IRQ_HANDLED;
 
 	pr_err("Fatal error on the modem.\n");
@@ -138,7 +137,6 @@ static int modem_powerup(const struct subsys_desc *subsys)
 	 */
 	INIT_COMPLETION(drv->stop_ack);
 	drv->subsys_desc.ramdump_disable = 0;
-	drv->ignore_errors = false;
 	drv->q6->desc.fw_name = subsys->fw_name;
 	return pil_boot(&drv->q6->desc);
 }
@@ -152,13 +150,6 @@ static void modem_crash_shutdown(const struct subsys_desc *subsys)
 		gpio_set_value(subsys->force_stop_gpio, 1);
 		mdelay(STOP_ACK_TIMEOUT_MS);
 	}
-}
-
-static void modem_free_memory(const struct subsys_desc *subsys)
-{
-	struct modem_data *drv = subsys_to_drv(subsys);
-
-	pil_free_memory(&drv->q6->desc);
 }
 
 static int modem_ramdump(int enable, const struct subsys_desc *subsys)
@@ -192,7 +183,8 @@ static int modem_ramdump(int enable, const struct subsys_desc *subsys)
 static irqreturn_t modem_wdog_bite_intr_handler(int irq, void *dev_id)
 {
 	struct modem_data *drv = subsys_to_drv(dev_id);
-	if (drv->ignore_errors)
+
+	if (subsys_get_crash_status(drv->subsys))
 		return IRQ_HANDLED;
 
 	pr_err("Watchdog bite received from modem software!\n");
@@ -216,7 +208,6 @@ static int pil_subsys_init(struct modem_data *drv,
 	drv->subsys_desc.shutdown = modem_shutdown;
 	drv->subsys_desc.powerup = modem_powerup;
 	drv->subsys_desc.ramdump = modem_ramdump;
-	drv->subsys_desc.free_memory = modem_free_memory;
 	drv->subsys_desc.crash_shutdown = modem_crash_shutdown;
 	drv->subsys_desc.err_fatal_handler = modem_err_fatal_intr_handler;
 	drv->subsys_desc.stop_ack_handler = modem_stop_ack_intr_handler;

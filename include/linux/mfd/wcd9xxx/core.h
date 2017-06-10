@@ -54,10 +54,13 @@
 
 #define TASHA_VERSION_1_0     0
 #define TASHA_VERSION_1_1     1
+#define TASHA_VERSION_2_0     2
 #define TASHA_IS_1_0(ver) \
 	((ver == TASHA_VERSION_1_0) ? 1 : 0)
 #define TASHA_IS_1_1(ver) \
 	((ver == TASHA_VERSION_1_1) ? 1 : 0)
+#define TASHA_IS_2_0(ver) \
+	((ver == TASHA_VERSION_2_0) ? 1 : 0)
 
 enum wcd9xxx_slim_slave_addr_type {
 	WCD9XXX_SLIM_SLAVE_ADDR_TYPE_TABLA,
@@ -221,6 +224,7 @@ enum wcd9xxx_chipid_major {
 	TAPAN_MAJOR = cpu_to_le16(0x103),
 	TOMTOM_MAJOR = cpu_to_le16(0x105),
 	TASHA_MAJOR = cpu_to_le16(0x0),
+	TASHA2P0_MAJOR = cpu_to_le16(0x107),
 };
 
 enum codec_power_states {
@@ -317,6 +321,15 @@ int wcd9xxx_get_current_power_state(struct wcd9xxx *,
 int wcd9xxx_slim_bulk_write(struct wcd9xxx *wcd9xxx,
 			    struct wcd9xxx_reg_val *bulk_reg,
 			    unsigned int size, bool interface);
+
+void wcd9xxx_disable_supplies(struct wcd9xxx *wcd9xxx,
+				     void *pdata);
+
+int wcd9xxx_disable_static_supplies_to_optimum(struct wcd9xxx *wcd9xxx,
+						void *data);
+int wcd9xxx_enable_static_supplies_to_optimum(
+			struct wcd9xxx *wcd9xxx,
+			void *pdata);
 
 #if defined(CONFIG_WCD9310_CODEC) || \
 	defined(CONFIG_WCD9304_CODEC) || \

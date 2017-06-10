@@ -479,7 +479,7 @@
 
 		qcom,cti-gpio-trigout = <2>;
 		pinctrl-names = "cti-trigout-pctrl";
-		pinctrl-0 = <&trigout_a0>;
+		pinctrl-0 = <&trigout_b0>;
 	};
 
 	cti7: cti@6017000 {
@@ -756,9 +756,9 @@
 		clock-names = "core_clk", "core_a_clk";
 	};
 
-	cti_modem_cpu0: cti@6038000 {
+	cti_modem_cpu0: cti@6060000 {
 		compatible = "arm,coresight-cti";
-		reg = <0x6038000 0x1000>;
+		reg = <0x6060000 0x1000>;
 		reg-names = "cti-base";
 
 		coresight-id = <46>;
@@ -770,9 +770,9 @@
 		clock-names = "core_clk", "core_a_clk";
 	};
 
-	cti_modem_cpu1: cti@6060000 {
+	cti_modem_cpu1: cti@6038000 {
 		compatible = "arm,coresight-cti";
-		reg = <0x6060000 0x1000>;
+		reg = <0x6038000 0x1000>;
 		reg-names = "cti-base";
 
 		coresight-id = <47>;

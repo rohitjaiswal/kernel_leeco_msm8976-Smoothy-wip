@@ -25,13 +25,13 @@
 #define DEFAULT_BIT_RATE 64000
 #define BIT_RATE_STEP 100
 #define DEFAULT_FRAME_RATE 15
-#define MAX_SLICE_BYTE_SIZE 1024
-#define MIN_SLICE_BYTE_SIZE 1024
-#define MAX_SLICE_MB_SIZE 300
+#define MAX_SLICE_BYTE_SIZE ((MAX_BIT_RATE)>>3)
+#define MIN_SLICE_BYTE_SIZE 512
+#define MAX_SLICE_MB_SIZE ((4096 * 2304) >> 8)
 #define I_FRAME_QP 26
 #define P_FRAME_QP 28
 #define B_FRAME_QP 30
-#define MAX_INTRA_REFRESH_MBS 300
+#define MAX_INTRA_REFRESH_MBS ((4096 * 2304) >> 8)
 #define MAX_NUM_B_FRAMES 4
 #define MAX_LTR_FRAME_COUNT 10
 
@@ -1084,6 +1084,25 @@ static struct msm_vidc_ctrl msm_venc_ctrls[] = {
 		.qmenu = mbi_statistics,
 		.step = 1,
 	},
+	{
+		.id = V4L2_CID_MPEG_VIDC_VIDEO_MAX_HIERP_LAYERS,
+		.name = "Set Max Hier P num layers sessions",
+		.type = V4L2_CTRL_TYPE_INTEGER,
+		.minimum = 0,
+		.maximum = 3,
+		.default_value = 0,
+		.step = 1,
+		.qmenu = NULL,
+	},
+	{
+		.id = V4L2_CID_MPEG_VIDC_VIDEO_LOWLATENCY_MODE,
+		.name = "Low Latency Mode",
+		.type = V4L2_CTRL_TYPE_BOOLEAN,
+		.minimum = V4L2_CID_MPEG_VIDC_VIDEO_LOWLATENCY_DISABLE,
+		.maximum = V4L2_CID_MPEG_VIDC_VIDEO_LOWLATENCY_ENABLE,
+		.default_value = V4L2_CID_MPEG_VIDC_VIDEO_LOWLATENCY_DISABLE,
+		.step = 1,
+	},
 };
 
 #define NUM_CTRLS ARRAY_SIZE(msm_venc_ctrls)
@@ -1102,6 +1121,14 @@ static u32 get_frame_size_compressed(int plane, u32 height, u32 width)
 {
 	int sz = ((height + 31) & (~31)) * ((width + 31) & (~31)) * 3/2;
 	sz = (sz + 4095) & (~4095);
+
+	/*
+	 * double the buffer size if resolution is less than
+	 * or equal to CIF (352x288) resolution.
+	 */
+	if (width * height <= 352 * 288)
+		sz = sz * 2;
+
 	return sz;
 }
 
@@ -1258,15 +1285,14 @@ static int msm_venc_queue_setup(struct vb2_queue *q,
 			}
 		}
 
+		*num_buffers += msm_dcvs_get_extra_buff_count(inst);
 		property_id = HAL_PARAM_BUFFER_COUNT_ACTUAL;
 		new_buf_count.buffer_type = HAL_BUFFER_OUTPUT;
 		new_buf_count.buffer_count_actual = *num_buffers;
-		new_buf_count.buffer_count_actual +=
-				msm_dcvs_get_extra_buff_count(inst, false);
 		rc = call_hfi_op(hdev, session_set_property, inst->session,
 			property_id, &new_buf_count);
 		if (!rc)
-			msm_dcvs_set_buff_req_handled(inst, false);
+			msm_dcvs_set_buff_req_handled(inst);
 
 		break;
 	case V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE:
@@ -1287,12 +1313,10 @@ static int msm_venc_queue_setup(struct vb2_queue *q,
 		if (extradata == V4L2_MPEG_VIDC_EXTRADATA_INPUT_CROP)
 			*num_planes = *num_planes + 1;
 		inst->fmts[OUTPUT_PORT]->num_planes = *num_planes;
-		new_buf_count.buffer_count_actual +=
-			msm_dcvs_get_extra_buff_count(inst, true);
 		rc = call_hfi_op(hdev, session_set_property, inst->session,
 					property_id, &new_buf_count);
-		if (!rc)
-			msm_dcvs_set_buff_req_handled(inst, true);
+		if (rc)
+			dprintk(VIDC_ERR, "failed to set count to fw\n");
 
 		dprintk(VIDC_DBG, "size = %d, alignment = %d, count = %d\n",
 				inst->buff_req.buffer[0].buffer_size,
@@ -1859,6 +1883,7 @@ static int try_set_ctrl(struct msm_vidc_inst *inst, struct v4l2_ctrl *ctrl)
 	struct hal_hybrid_hierp hyb_hierp;
 	u32 hier_p_layers = 0, hier_b_layers = 0, mbi_statistics_mode = 0;
 	struct hal_venc_perf_mode venc_mode;
+	int max_hierp_layers;
 
 	if (!inst || !inst->core || !inst->core->device) {
 		dprintk(VIDC_ERR, "%s invalid parameters\n", __func__);
@@ -2588,7 +2613,7 @@ static int try_set_ctrl(struct msm_vidc_inst *inst, struct v4l2_ctrl *ctrl)
 	case V4L2_CID_MPEG_VIDC_SET_PERF_LEVEL:
 		switch (ctrl->val) {
 		case V4L2_CID_MPEG_VIDC_PERF_LEVEL_NOMINAL:
-			inst->flags |= VIDC_NOMINAL;
+			inst->flags &= ~VIDC_TURBO;
 			break;
 		case V4L2_CID_MPEG_VIDC_PERF_LEVEL_TURBO:
 			inst->flags |= VIDC_TURBO;
@@ -2729,6 +2754,30 @@ static int try_set_ctrl(struct msm_vidc_inst *inst, struct v4l2_ctrl *ctrl)
 			V4L2_CID_MPEG_VIDC_VIDEO_MBI_STATISTICS_MODE,
 			ctrl->val);
 		pdata = &mbi_statistics_mode;
+		break;
+	case V4L2_CID_MPEG_VIDC_VIDEO_MAX_HIERP_LAYERS:
+		property_id = HAL_PARAM_VENC_HIER_P_MAX_ENH_LAYERS;
+		max_hierp_layers = ctrl->val;
+		if (max_hierp_layers > inst->capability.hier_p.max) {
+			dprintk(VIDC_ERR,
+				"Error max HP layers(%d)>max supported(%d)\n",
+				max_hierp_layers, inst->capability.hier_p.max);
+			rc = -ENOTSUPP;
+			break;
+		}
+		pdata = &max_hierp_layers;
+		break;
+	case V4L2_CID_MPEG_VIDC_VIDEO_LOWLATENCY_MODE:
+		property_id = HAL_PARAM_VENC_LOW_LATENCY;
+		if (ctrl->val ==
+			V4L2_CID_MPEG_VIDC_VIDEO_LOWLATENCY_ENABLE) {
+			enable.enable = 1;
+			inst->flags |= VIDC_LOW_LATENCY;
+		} else {
+			enable.enable = 0;
+			inst->flags &= ~VIDC_LOW_LATENCY;
+		}
+		pdata = &enable;
 		break;
 	default:
 		dprintk(VIDC_ERR, "Unsupported index: %x\n", ctrl->id);

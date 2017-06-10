@@ -606,6 +606,10 @@ static int mmc_read_ext_csd(struct mmc_card *card, u8 *ext_csd)
 
 	if (card->ext_csd.rev >= 7) {
 		card->ext_csd.cmdq_support = ext_csd[EXT_CSD_CMDQ_SUPPORT];
+		card->ext_csd.fw_version = ext_csd[EXT_CSD_FW_VERSION];
+		pr_info("%s: eMMC FW version: 0x%02x\n",
+			mmc_hostname(card->host),
+			card->ext_csd.fw_version);
 		if (card->ext_csd.cmdq_support) {
 			/*
 			 * Queue Depth = N + 1,
@@ -1212,6 +1216,7 @@ out:
 int mmc_set_clock_bus_speed(struct mmc_card *card, unsigned long freq)
 {
 	int err;
+	struct mmc_host *host = card->host;
 
 	if (freq < MMC_HS400_MAX_DTR) {
 		/*
@@ -1221,8 +1226,16 @@ int mmc_set_clock_bus_speed(struct mmc_card *card, unsigned long freq)
 		mmc_set_timing(card->host, MMC_TIMING_LEGACY);
 		mmc_set_clock(card->host, MMC_HIGH_26_MAX_DTR);
 
-		err = mmc_select_hs(card, card->cached_ext_csd);
+		if (host->clk_scaling.lower_bus_speed_mode &
+				MMC_SCALING_LOWER_DDR52_MODE)
+			err = mmc_select_hsddr(card, card->cached_ext_csd);
+		else
+			err = mmc_select_hs(card, card->cached_ext_csd);
 	} else {
+		if (mmc_card_ddr_mode(card)) {
+			mmc_set_timing(card->host, MMC_TIMING_LEGACY);
+			mmc_set_clock(card->host, MMC_HIGH_26_MAX_DTR);
+		}
 		err = mmc_select_hs400(card, card->cached_ext_csd);
 	}
 

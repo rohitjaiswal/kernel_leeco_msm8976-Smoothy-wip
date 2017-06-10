@@ -66,14 +66,19 @@ static inline bool is_turbo_session(struct msm_vidc_inst *inst)
 	return !!(inst->flags & VIDC_TURBO);
 }
 
+static inline bool is_low_power_session(struct msm_vidc_inst *inst)
+{
+	return !!(inst->flags & VIDC_POWER_SAVE);
+}
+
+static inline bool is_low_latency_session(struct msm_vidc_inst *inst)
+{
+	return !!(inst->flags & VIDC_LOW_LATENCY);
+}
+
 static inline bool is_thumbnail_session(struct msm_vidc_inst *inst)
 {
 	return !!(inst->flags & VIDC_THUMBNAIL);
-}
-
-static inline bool is_nominal_session(struct msm_vidc_inst *inst)
-{
-	return !!(inst->flags & VIDC_NOMINAL);
 }
 
 int msm_comm_g_ctrl(struct msm_vidc_inst *inst, int id)
@@ -273,7 +278,16 @@ static int msm_comm_vote_bus(struct msm_vidc_core *core)
 				get_hal_domain(inst->session_type));
 		vote_data[i].load = msm_comm_get_inst_load(inst,
 				LOAD_CALC_NO_QUIRKS);
-		vote_data[i].low_power = !!(inst->flags & VIDC_POWER_SAVE);
+
+		if (is_turbo_session(inst))
+			vote_data[i].power_mode = VIDC_POWER_TURBO;
+		else if (is_low_power_session(inst))
+			vote_data[i].power_mode = VIDC_POWER_LOW;
+		else if (is_low_latency_session(inst))
+			vote_data[i].power_mode = VIDC_POWER_LOW_LATENCY;
+		else
+			vote_data[i].power_mode = VIDC_POWER_NORMAL;
+
 		i++;
 	}
 	mutex_unlock(&core->lock);
@@ -398,13 +412,18 @@ static void handle_sys_init_done(enum command_response cmd, void *data)
 			"Failed to get valid response for sys init\n");
 		return;
 	}
+	if (response->status) {
+		dprintk(VIDC_ERR, "%s: status 0x%x\n", __func__,
+			response->status);
+		return;
+	}
 	core = get_vidc_core(response->device_id);
 	if (!core) {
 		dprintk(VIDC_ERR, "Wrong device_id received\n");
 		return;
 	}
 	sys_init_msg = response->data;
-	if (!sys_init_msg) {
+	if (!sys_init_msg || !sys_init_msg->capabilities) {
 		dprintk(VIDC_ERR, "sys_init_done message not proper\n");
 		return;
 	}
@@ -623,6 +642,16 @@ static void handle_session_init_done(enum command_response cmd, void *data)
 				"Failed to get valid response for session init\n");
 		return;
 	}
+
+	inst = response->session_id;
+	if (!inst || !inst->core || !inst->core->device) {
+		dprintk(VIDC_ERR,
+			"%s: invalid parameters, inst %p\n", __func__, inst);
+		return;
+	}
+	core = inst->core;
+	hdev = inst->core->device;
+
 	if (response->status) {
 		dprintk(VIDC_ERR,
 			"Session init response from FW : 0x%x\n",
@@ -633,13 +662,6 @@ static void handle_session_init_done(enum command_response cmd, void *data)
 			msm_comm_generate_session_error(inst);
 	}
 
-	inst = response->session_id;
-	if (!inst) {
-		dprintk(VIDC_WARN, "Got a response for an inactive session\n");
-		return;
-	}
-	core = inst->core;
-	hdev = inst->core->device;
 	codec = inst->session_type == MSM_VIDC_DECODER ?
 			inst->fmts[OUTPUT_PORT]->fourcc :
 			inst->fmts[CAPTURE_PORT]->fourcc;
@@ -1105,6 +1127,7 @@ static void handle_session_error(enum command_response cmd, void *data)
 	struct msm_vidc_cb_cmd_done *response = data;
 	struct hfi_device *hdev = NULL;
 	struct msm_vidc_inst *inst = NULL;
+	int event = V4L2_EVENT_MSM_VIDC_SYS_ERROR;
 
 	if (!response) {
 		dprintk(VIDC_ERR,
@@ -1126,18 +1149,17 @@ static void handle_session_error(enum command_response cmd, void *data)
 	change_inst_state(inst, MSM_VIDC_CORE_INVALID);
 
 	if (response->status == VIDC_ERR_MAX_CLIENTS) {
-		dprintk(VIDC_WARN,
-			"send max clients reached error to client: %p\n",
-			inst);
-		msm_vidc_queue_v4l2_event(inst,
-			V4L2_EVENT_MSM_VIDC_MAX_CLIENTS);
+		dprintk(VIDC_WARN, "Too many clients, rejecting %p", inst);
+		event = V4L2_EVENT_MSM_VIDC_MAX_CLIENTS;
+	} else if (response->status == VIDC_ERR_NOT_SUPPORTED) {
+		dprintk(VIDC_WARN, "Unsupported error for %p", inst);
+		event = V4L2_EVENT_MSM_VIDC_HW_UNSUPPORTED;
 	} else {
-		dprintk(VIDC_ERR,
-			"send session error to client: %p\n",
-			inst);
-		msm_vidc_queue_v4l2_event(inst,
-			V4L2_EVENT_MSM_VIDC_SYS_ERROR);
+		dprintk(VIDC_WARN, "Unknown session error (%d) for %p\n",
+				response->status, inst);
+		event = V4L2_EVENT_MSM_VIDC_SYS_ERROR;
 	}
+	msm_vidc_queue_v4l2_event(inst, event);
 }
 
 static void msm_comm_clean_notify_client(struct msm_vidc_core *core)
@@ -1767,12 +1789,12 @@ int msm_comm_scale_clocks(struct msm_vidc_core *core)
 
 int msm_comm_scale_clocks_load(struct msm_vidc_core *core, int num_mbs_per_sec)
 {
-	u32 codecs_enabled = 0;
 	int rc = 0;
 	struct hfi_device *hdev;
 	struct msm_vidc_inst *inst = NULL;
-	bool is_nominal = false;
-	struct msm_vidc_platform_resources *res;
+	int num_sessions = 0;
+	struct vidc_clk_scale_data clk_scale_data;
+	int codec = 0;
 
 	if (!core) {
 		dprintk(VIDC_ERR, "%s Invalid args: %p\n", __func__, core);
@@ -1780,64 +1802,33 @@ int msm_comm_scale_clocks_load(struct msm_vidc_core *core, int num_mbs_per_sec)
 	}
 
 	hdev = core->device;
-	res = &core->resources;
-
 	if (!hdev) {
 		dprintk(VIDC_ERR, "%s Invalid device handle: %p\n",
 			__func__, hdev);
 		return -EINVAL;
 	}
 
+	memset(&clk_scale_data, 0, sizeof(clk_scale_data));
 	mutex_lock(&core->lock);
 	list_for_each_entry(inst, &core->instances, list) {
-		int codec = 0;
-
 		codec = inst->session_type == MSM_VIDC_DECODER ?
 			inst->fmts[OUTPUT_PORT]->fourcc :
 			inst->fmts[CAPTURE_PORT]->fourcc;
-
-		codecs_enabled |= VIDC_VOTE_DATA_SESSION_VAL(
+		clk_scale_data.session[num_sessions] =
+				VIDC_VOTE_DATA_SESSION_VAL(
 				get_hal_codec_type(codec),
 				get_hal_domain(inst->session_type));
-
-		if (is_nominal_session(inst))
-			is_nominal = true;
+		num_sessions++;
 	}
+
+	clk_scale_data.num_sessions = num_sessions;
 	mutex_unlock(&core->lock);
 
-	dprintk(VIDC_INFO, "num_mbs_per_sec = %d codecs_enabled 0x%x\n",
-			num_mbs_per_sec, codecs_enabled);
-
-	if (is_nominal && num_mbs_per_sec) {
-		struct load_freq_table *table = res->load_freq_tbl;
-		u32 table_size = res->load_freq_tbl_size;
-		u32 low_freq = table[table_size - 1].freq;
-		int i;
-
-		/*
-		* Parse the load frequency table from highest index and
-		* whenever there is a change in frequency detected, it is
-		* assumed as nominal frequency  Check the current load
-		* against the load corresponding to nominal frequency and
-		* update num_mbs_per_sec accordingly.
-		*/
-		for (i = table_size - 1; i >= 0; i--) {
-			if (table[i].freq > low_freq) {
-				if (num_mbs_per_sec < table[i].load) {
-					num_mbs_per_sec = table[i].load;
-					dprintk(VIDC_DBG,
-						"updated num_mbs_per_sec: %d\n",
-						num_mbs_per_sec);
-				}
-				break;
-			}
-		}
-	}
-
 	rc = call_hfi_op(hdev, scale_clocks,
-		hdev->hfi_device_data, num_mbs_per_sec, codecs_enabled);
+		hdev->hfi_device_data, num_mbs_per_sec, &clk_scale_data);
 	if (rc)
 		dprintk(VIDC_ERR, "Failed to set clock rate: %d\n", rc);
+
 	return rc;
 }
 

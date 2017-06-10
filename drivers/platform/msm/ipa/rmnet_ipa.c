@@ -2045,7 +2045,7 @@ static int ipa_wwan_remove(struct platform_device *pdev)
 		IPAWANERR("Error deleting resource %d, ret=%d\n",
 		IPA_RM_RESOURCE_WWAN_0_PROD, ret);
 	cancel_work_sync(&ipa_tx_wakequeue_work);
-	cancel_delayed_work_sync(&ipa_tether_stats_poll_wakequeue_work);
+	cancel_delayed_work(&ipa_tether_stats_poll_wakequeue_work);
 	free_netdev(ipa_netdevs[0]);
 	ipa_netdevs[0] = NULL;
 	/* No need to remove wwan_ioctl during SSR */
@@ -2158,11 +2158,11 @@ static int ssr_notifier_cb(struct notifier_block *this,
 			pr_info("IPA received MPSS BEFORE_SHUTDOWN\n");
 			atomic_set(&is_ssr, 1);
 			ipa_q6_cleanup();
-			netif_stop_queue(ipa_netdevs[0]);
+			if (ipa_netdevs[0])
+				netif_stop_queue(ipa_netdevs[0]);
 			ipa_qmi_stop_workqueues();
 			wan_ioctl_stop_qmi_messages();
 			ipa_stop_polling_stats();
-			atomic_set(&is_ssr, 1);
 			if (atomic_read(&is_initialized))
 				platform_driver_unregister(&rmnet_ipa_driver);
 			pr_info("IPA BEFORE_SHUTDOWN handling is complete\n");
@@ -2274,7 +2274,9 @@ static void tethering_stats_poll_queue(struct work_struct *work)
 {
 	rmnet_ipa_get_stats_and_update(false);
 
-	schedule_delayed_work(&ipa_tether_stats_poll_wakequeue_work,
+	/* Schedule again only if there's an active polling interval */
+	if (0 != ipa_rmnet_ctx.polling_interval)
+		schedule_delayed_work(&ipa_tether_stats_poll_wakequeue_work,
 			msecs_to_jiffies(ipa_rmnet_ctx.polling_interval*1000));
 }
 

@@ -246,6 +246,7 @@ static void ipa_handle_tx(struct ipa_sys_context *sys)
 	int cnt;
 
 	ipa_inc_client_enable_clks();
+	pm_stay_awake(ipa_ctx->pdev);
 	do {
 		cnt = ipa_handle_tx_core(sys, true, true);
 		if (cnt == 0) {
@@ -258,6 +259,7 @@ static void ipa_handle_tx(struct ipa_sys_context *sys)
 	} while (inactive_cycles <= POLLING_INACTIVITY_TX);
 
 	ipa_tx_switch_to_intr_mode(sys);
+	pm_relax(ipa_ctx->pdev);
 	ipa_dec_client_disable_clks();
 }
 
@@ -853,6 +855,7 @@ static void ipa_handle_rx(struct ipa_sys_context *sys)
 	int cnt;
 
 	ipa_inc_client_enable_clks();
+	pm_stay_awake(ipa_ctx->pdev);
 	do {
 		cnt = ipa_handle_rx_core(sys, true, true);
 		if (cnt == 0) {
@@ -865,6 +868,7 @@ static void ipa_handle_rx(struct ipa_sys_context *sys)
 	} while (inactive_cycles <= POLLING_INACTIVITY_RX);
 
 	ipa_rx_switch_to_intr_mode(sys);
+	pm_relax(ipa_ctx->pdev);
 	ipa_dec_client_disable_clks();
 }
 
@@ -1233,11 +1237,13 @@ int ipa_teardown_sys_pipe(u32 clnt_hdl)
 	if (IPA_CLIENT_IS_CONS(ep->client))
 		ipa_cleanup_rx(ep->sys);
 
-	if (ipa_ctx->modem_cfg_emb_pipe_flt &&
-		ep->client == IPA_CLIENT_APPS_LAN_WAN_PROD)
-		IPADBG("modem cfg emb pipe flt\n");
-	else
-		ipa_delete_dflt_flt_rules(clnt_hdl);
+	if (!ep->skip_ep_cfg && IPA_CLIENT_IS_PROD(ep->client)) {
+		if (ipa_ctx->modem_cfg_emb_pipe_flt &&
+			ep->client == IPA_CLIENT_APPS_LAN_WAN_PROD)
+			IPADBG("modem cfg emb pipe flt\n");
+		else
+			ipa_delete_dflt_flt_rules(clnt_hdl);
+	}
 
 	if (IPA_CLIENT_IS_WLAN_CONS(ep->client))
 		atomic_dec(&ipa_ctx->wc_memb.active_clnt_cnt);

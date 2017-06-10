@@ -2924,12 +2924,27 @@ void ipa_suspend_handler(enum ipa_irq_type interrupt,
 		((struct ipa_tx_suspend_irq_data *)interrupt_data)->endpoints;
 	u32 bmsk = 1;
 	u32 i = 0;
+	int res;
+	struct ipa_ep_cfg_holb holb_cfg;
 
 	IPADBG("interrupt=%d, interrupt_data=%u\n", interrupt, suspend_data);
+	memset(&holb_cfg, 0, sizeof(holb_cfg));
+	holb_cfg.tmr_val = 0;
+
 	for (i = 0; i < ipa_ctx->ipa_num_pipes; i++) {
 		if ((suspend_data & bmsk) && (ipa_ctx->ep[i].valid)) {
 			resource = ipa_get_rm_resource_from_ep(i);
-			ipa_rm_request_resource_with_timer(resource);
+			res = ipa_rm_request_resource_with_timer(resource);
+			if (res == -EPERM &&
+				IPA_CLIENT_IS_CONS(ipa_ctx->ep[i].client)) {
+				holb_cfg.en = 1;
+				res = ipa_cfg_ep_holb_by_client(
+				   ipa_ctx->ep[i].client, &holb_cfg);
+				if (res) {
+					IPAERR("holb en fail,IPAHW stall\n");
+					BUG();
+				}
+			}
 		}
 		bmsk = bmsk << 1;
 	}
@@ -3501,6 +3516,9 @@ static int ipa_init(const struct ipa_plat_drv_res *resource_p,
 		result = -ENOMEM;
 		goto fail_init_hw;
 	}
+
+	/* Create a wakeup source. */
+	ipa_ctx->pdev->power.wakeup = wakeup_source_register("IPA_WS");
 
 	/* Initialize IPA RM (resource manager) */
 	result = ipa_rm_initialize();

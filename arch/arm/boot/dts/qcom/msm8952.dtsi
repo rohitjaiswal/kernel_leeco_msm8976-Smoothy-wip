@@ -44,7 +44,7 @@
 			linux,reserve-contiguous-region;
 			linux,reserve-region;
 			linux,fixup-reserve-region;
-			reg = <0x0 0x86800000 0x0 0x05a00000>;
+			reg = <0x0 0x86c00000 0x0 0x05600000>;
 			label = "modem_mem";
 		};
 
@@ -52,7 +52,7 @@
 			linux,reserve-contiguous-region;
 			linux,reserve-region;
 			linux,remove-completely;
-			reg = <0x0 0x8c200000 0x0 0x1b00000>;
+			reg = <0x0 0x8c200000 0x0 0x1700000>;
 			label = "reloc_mem";
 		};
 
@@ -498,7 +498,7 @@
 
 	qcom,rmtfs_sharedmem@00000000 {
 		compatible = "qcom,sharedmem-uio";
-		reg = <0x00000000 0x00180000>;
+		reg = <0x00000000 0x00200000>;
 		reg-names = "rmtfs";
 		qcom,client-id = <0x00000001>;
 	};

@@ -734,8 +734,7 @@ static void read_usb_type(struct smbchg_chip *chip, char **usb_type_name,
 #define BATT_PRE_CHG_VAL		0x1
 #define BATT_FAST_CHG_VAL		0x2
 #define BATT_TAPER_CHG_VAL		0x3
-#define CHG_EN_BIT			BIT(0)
-#define CHG_INHIBIT_BIT		BIT(1)
+#define CHG_INHIBIT_BIT			BIT(1)
 #define BAT_TCC_REACHED_BIT		BIT(7)
 static int get_prop_batt_status(struct smbchg_chip *chip)
 {
@@ -5753,10 +5752,14 @@ static int determine_initial_status(struct smbchg_chip *chip)
 	chip->usb_present = is_usb_present(chip);
 	chip->dc_present = is_dc_present(chip);
 
-	if (chip->usb_present)
+	if (chip->usb_present) {
+		pr_smb(PR_MISC, "setting usb psy dp=f dm=f\n");
+		power_supply_set_dp_dm(chip->usb_psy,
+				POWER_SUPPLY_DP_DM_DPF_DMF);
 		handle_usb_insertion(chip);
-	else
+	} else {
 		handle_usb_removal(chip);
+	}
 
 	return 0;
 }
@@ -5817,7 +5820,7 @@ static inline int get_bpd(const char *name)
 #define USE_REGISTER_FOR_CURRENT	BIT(2)
 #define CHGR_CFG2			0xFC
 #define CHG_EN_SRC_BIT			BIT(7)
-#define CHG_EN_COMMAND_BIT		BIT(6)
+#define CHG_EN_POLARITY_BIT		BIT(6)
 #define P2F_CHG_TRAN			BIT(5)
 #define CHG_BAT_OV_ECC			BIT(4)
 #define I_TERM_BIT			BIT(3)
@@ -5967,13 +5970,23 @@ static int smbchg_hw_init(struct smbchg_chip *chip)
 	 * the device tree configuration.
 	 */
 	rc = smbchg_sec_masked_write(chip, chip->chgr_base + CHGR_CFG2,
-			CHG_EN_SRC_BIT | CHG_EN_COMMAND_BIT | P2F_CHG_TRAN
+			CHG_EN_SRC_BIT | CHG_EN_POLARITY_BIT | P2F_CHG_TRAN
 			| I_TERM_BIT | AUTO_RECHG_BIT | CHARGER_INHIBIT_BIT,
-			CHG_EN_COMMAND_BIT
+			CHG_EN_POLARITY_BIT
 			| (chip->chg_inhibit_en ? CHARGER_INHIBIT_BIT : 0)
 			| (chip->iterm_disabled ? I_TERM_BIT : 0));
 	if (rc < 0) {
 		dev_err(chip->dev, "Couldn't set chgr_cfg2 rc=%d\n", rc);
+		return rc;
+	}
+
+	/*
+	 * enable battery charging to make sure it hasn't been changed before
+	 * boot.
+	 */
+	rc = smbchg_charging_en(chip, true);
+	if (rc < 0) {
+		dev_err(chip->dev, "Couldn't enable battery charging=%d\n", rc);
 		return rc;
 	}
 	chip->battchg_disabled = 0;
@@ -6163,13 +6176,9 @@ static int smbchg_hw_init(struct smbchg_chip *chip)
 
 	smbchg_charging_status_change(chip);
 
-	/*
-	 * The charger needs 20 milliseconds to go into battery supplementary
-	 * mode. Sleep here until we are sure it takes into effect.
-	 */
-	msleep(20);
 	smbchg_usb_en(chip, chip->chg_enabled, REASON_USER);
 	smbchg_dc_en(chip, chip->chg_enabled, REASON_USER);
+
 	/* resume threshold */
 	if (chip->resume_delta_mv != -EINVAL) {
 

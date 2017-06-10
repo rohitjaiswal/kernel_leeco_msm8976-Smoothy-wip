@@ -69,8 +69,7 @@
 			linux,reserve-contiguous-region;
 			linux,reserve-region;
 			linux,fixup-reserve-region;
-
-			reg = <0x0 0x86800000 0x0 0x05a00000>;
+			reg = <0x0 0x86C00000 0x0 0x05600000>;
 			label = "modem_mem";
 		};
 
@@ -78,9 +77,7 @@
 			linux,reserve-contiguous-region;
 			linux,reserve-region;
 			linux,remove-completely;
-
-			reg = <0x0 0x8c200000 0x0 0x1b00000>;
-
+                        reg = <0x0 0x8c200000 0x0 0x1700000>;
 			label = "reloc_mem";
 		};
 
@@ -232,7 +229,8 @@
 			< 366670000   5 >,  /* SVS Plus  */
 			< 432000000   6 >,  /* NOM       */
 			< 480000000   7 >,  /* Turbo     */
-			< 550000000   8 >;  /* Super Turbo */
+			< 550000000   8 >,  /* Super Turbo */
+			< 600000000   9 >;  /* Super Turbo */
 		#clock-cells = <1>;
 	};
 
@@ -808,9 +806,12 @@
 						<1 4 &CPU4 &CPU5 &CPU6 &CPU7>;
 		qcom,disable-cx-phase-ctrl;
 		qcom,disable-gfx-phase-ctrl;
-		qcom,disable-vdd-mx;
 		qcom,disable-psm;
 		qcom,disable-ocr;
+		qcom,mx-restriction-temp = <15>;
+		qcom,mx-restriction-temp-hysteresis = <2>;
+		qcom,mx-retention-min = <RPM_SMD_REGULATOR_LEVEL_TURBO>;
+		vdd-mx-supply = <&pm8950_s6_floor_level>;
 		qcom,vdd-restriction-temp = <5>;
 		qcom,vdd-restriction-temp-hysteresis = <10>;
 		vdd-dig-supply = <&pm8950_s2_floor_level>;
@@ -826,7 +827,7 @@
 
 		qcom,vdd-gfx-rstr {
 			qcom,vdd-rstr-reg = "vdd-gfx";
-			qcom,levels = <6 8 8>; /* Nominal, Turbo, Turbo */
+			qcom,levels = <6 9 9>; /* Nominal, Turbo, Turbo */
 			qcom,min-level = <1>; /* No Request */
 		};
 
@@ -896,7 +897,7 @@
 
 	qcom,rmtfs_sharedmem@0 {
 		compatible = "qcom,sharedmem-uio";
-		reg = <0x0 0x00180000>; /* '0' indicates dynamic allocation */
+		reg = <0x0 0x00200000>; /* '0' indicates dynamic allocation */
 		reg-names = "rmtfs";
 		qcom,client-id = <0x00000001>;
 	};
@@ -2614,11 +2615,26 @@
 		qcom,gpio-err-ready = <&smp2pgpio_ssr_smp2p_1_in 1 0>;
 		qcom,gpio-proxy-unvote = <&smp2pgpio_ssr_smp2p_1_in 2 0>;
 		qcom,gpio-stop-ack = <&smp2pgpio_ssr_smp2p_1_in 3 0>;
+		qcom,gpio-shutdown-ack = <&smp2pgpio_ssr_smp2p_1_in 7 0>;
 
 		/* GPIO output to mss */
 		qcom,gpio-force-stop = <&smp2pgpio_ssr_smp2p_1_out 0 0>;
 		linux,contiguous-region = <&modem_mem>;
 	};
+
+	mcd {
+		compatible = "qcom,mcd";
+		qcom,ce-hw-instance = <0>;
+		qcom,ce-device = <0>;
+		clocks = <&clock_gcc clk_crypto_clk_src>,
+			 <&clock_gcc clk_gcc_crypto_clk>,
+			 <&clock_gcc clk_gcc_crypto_ahb_clk>,
+			 <&clock_gcc clk_gcc_crypto_axi_clk>;
+		clock-names = "core_clk_src", "core_clk",
+				"iface_clk", "bus_clk";
+		qcom,ce-opp-freq = <100000000>;
+	};
+
 };
 
 #include "msm-pm8950-rpm-regulator.dtsi"

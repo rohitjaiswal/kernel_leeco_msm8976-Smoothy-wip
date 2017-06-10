@@ -89,7 +89,7 @@
 
 		secure_mem: secure_region@0 {
 			linux,reserve-contiguous-region;
-			reg = <0x0 0x0 0x0 0x6D00000>;
+			reg = <0x0 0x0 0x0 0x7400000>;
 			label = "secure_mem";
 		};
 
@@ -912,7 +912,7 @@
 
 		qcom,bus-width = <8>;
 
-		qcom,cpu-dma-latency-us = <2 601 801>;
+		qcom,cpu-dma-latency-us = <60 340 900>;
 
 		qcom,msm-bus,name = "sdhc1";
 		qcom,msm-bus,num-cases = <9>;
@@ -1503,6 +1503,7 @@
 		qcom,msm-bus,name = "qseecom-noc";
 		qcom,disk-encrypt-pipe-pair = <2>;
 		qcom,support-fde;
+		qcom,appsbl-qseecom-support;
 		qcom,msm-bus,num-cases = <4>;
 		qcom,msm-bus,num-paths = <1>;
 		qcom,support-bus-scaling;
@@ -2603,6 +2604,8 @@
 };
 
 &gdsc_oxili_cx {
+	clock-names = "core_clk";
+	clocks = <&clock_gcc_gfx clk_gcc_oxili_gfx3d_clk>;
 	status = "okay";
 };
 

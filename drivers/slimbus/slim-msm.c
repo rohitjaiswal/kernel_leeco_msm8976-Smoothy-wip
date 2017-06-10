@@ -531,13 +531,15 @@ void msm_slim_tx_msg_return(struct msm_slim_ctrl *dev, int err)
 				pr_err("SLIM TX get IOVEC failed:%d", ret);
 			return;
 		}
-		if (addr == dev->bulk.phys) {
+		if (addr == dev->bulk.wr_dma) {
 			SLIM_INFO(dev, "BULK WR complete");
-			dev->bulk.in_progress = false;
+			dma_unmap_single(dev->dev, dev->bulk.wr_dma,
+					 dev->bulk.size, DMA_TO_DEVICE);
 			if (!dev->bulk.cb)
 				SLIM_WARN(dev, "no callback for bulk WR?");
 			else
 				dev->bulk.cb(dev->bulk.ctx, err);
+			dev->bulk.in_progress = false;
 			pm_runtime_mark_last_busy(dev->dev);
 			return;
 		}
@@ -864,9 +866,7 @@ static int msm_slim_init_rx_msgq(struct msm_slim_ctrl *dev, u32 pipe_reg)
 	struct sps_connect *config = &endpoint->config;
 	struct sps_mem_buffer *descr = &config->desc;
 	struct sps_mem_buffer *mem = &endpoint->buf;
-	struct completion *notify = &dev->rx_msgq_notify;
 
-	init_completion(notify);
 	if (dev->use_rx_msgqs == MSM_MSGQ_DISABLED)
 		return 0;
 
@@ -1136,8 +1136,6 @@ static void msm_slim_remove_ep(struct msm_slim_ctrl *dev,
 	struct sps_mem_buffer *mem = &endpoint->buf;
 
 	msm_slim_sps_mem_free(dev, mem);
-	if (*msgq_flag == MSM_MSGQ_ENABLED)
-		msm_slim_disconnect_endp(dev, endpoint, msgq_flag);
 	msm_slim_sps_mem_free(dev, descr);
 	msm_slim_free_endpoint(endpoint);
 }
@@ -1148,13 +1146,16 @@ void msm_slim_deinit_ep(struct msm_slim_ctrl *dev,
 {
 	int ret = 0;
 	struct sps_connect *config = &endpoint->config;
-	if (config->mode == SPS_MODE_SRC) {
-		ret = msm_slim_discard_rx_data(dev, endpoint);
-		if (ret)
-			SLIM_WARN(dev, "discarding Rx data failed\n");
+
+	if (*msgq_flag == MSM_MSGQ_ENABLED) {
+		if (config->mode == SPS_MODE_SRC) {
+			ret = msm_slim_discard_rx_data(dev, endpoint);
+			if (ret)
+				SLIM_WARN(dev, "discarding Rx data failed\n");
+		}
+		msm_slim_disconnect_endp(dev, endpoint, msgq_flag);
+		msm_slim_remove_ep(dev, endpoint, msgq_flag);
 	}
-	msm_slim_disconnect_endp(dev, endpoint, msgq_flag);
-	msm_slim_remove_ep(dev, endpoint, msgq_flag);
 }
 
 static void msm_slim_sps_unreg_event(struct sps_pipe *sps)

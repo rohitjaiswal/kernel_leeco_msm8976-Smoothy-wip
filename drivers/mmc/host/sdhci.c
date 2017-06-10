@@ -3277,22 +3277,30 @@ static int sdhci_get_data_err(u32 intmask)
 	return 0;
 }
 
-static irqreturn_t sdhci_cmdq_irq(struct mmc_host *mmc, u32 intmask)
+static irqreturn_t sdhci_cmdq_irq(struct sdhci_host *host, u32 intmask)
 {
 	int err = 0;
+	u32 mask = 0;
 
 	if (intmask & SDHCI_INT_CMD_MASK)
 		err = sdhci_get_cmd_err(intmask);
 	else if (intmask & SDHCI_INT_DATA_MASK)
 		err = sdhci_get_data_err(intmask);
 
-	return cmdq_irq(mmc, err);
+	if (err) {
+		/* Clear the error interrupts */
+		mask = intmask & SDHCI_INT_ERROR_MASK;
+		sdhci_writel(host, mask, SDHCI_INT_STATUS);
+	}
+
+	return cmdq_irq(host->mmc, err);
 }
 
 #else
-static irqreturn_t sdhci_cmdq_irq(struct mmc_host *mmc, u32 intmask)
+static irqreturn_t sdhci_cmdq_irq(struct sdhci_host *host, u32 intmask)
 {
-	pr_err("%s: rxd cmdq-irq when disabled !!!!\n", mmc_hostname(mmc));
+	pr_err("%s: Received cmdq-irq when disabled !!!!\n",
+		mmc_hostname(host->mmc));
 	return IRQ_NONE;
 }
 #endif
@@ -3352,7 +3360,7 @@ again:
 		pr_debug("*** %s: cmdq intr: 0x%08x\n",
 				mmc_hostname(host->mmc),
 				intmask);
-		result = sdhci_cmdq_irq(host->mmc, intmask);
+		result = sdhci_cmdq_irq(host, intmask);
 		if (result == IRQ_HANDLED)
 			goto out;
 	}
@@ -3787,6 +3795,17 @@ static int sdhci_cmdq_crypto_cfg(struct mmc_host *mmc,
 	return sdhci_crypto_cfg(host, mrq, slot);
 }
 
+static void sdhci_cmdq_crypto_cfg_reset(struct mmc_host *mmc, unsigned int slot)
+{
+	struct sdhci_host *host = mmc_priv(mmc);
+
+	if (!host->is_crypto_en)
+		return;
+
+	if (host->ops->crypto_cfg_reset)
+		host->ops->crypto_cfg_reset(host, slot);
+}
+
 static void sdhci_cmdq_post_cqe_halt(struct mmc_host *mmc)
 {
 	struct sdhci_host *host = mmc_priv(mmc);
@@ -3840,6 +3859,10 @@ static int sdhci_cmdq_crypto_cfg(struct mmc_host *mmc,
 	return 0;
 }
 
+static void sdhci_cmdq_crypto_cfg_reset(struct mmc_host *mmc, unsigned int slot)
+{
+
+}
 static void sdhci_cmdq_post_cqe_halt(struct mmc_host *mmc)
 {
 }
@@ -3856,6 +3879,7 @@ static const struct cmdq_host_ops sdhci_cmdq_ops = {
 	.set_block_size = sdhci_cmdq_set_block_size,
 	.clear_set_dumpregs = sdhci_cmdq_clear_set_dumpregs,
 	.crypto_cfg	= sdhci_cmdq_crypto_cfg,
+	.crypto_cfg_reset	= sdhci_cmdq_crypto_cfg_reset,
 	.post_cqe_halt = sdhci_cmdq_post_cqe_halt,
 	.pm_qos_update = sdhci_cmdq_update_pm_qos,
 };

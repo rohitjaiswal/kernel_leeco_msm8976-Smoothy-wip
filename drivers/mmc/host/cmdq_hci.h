@@ -164,6 +164,7 @@ struct cmdq_host {
 	u32 quirks;
 #define CMDQ_QUIRK_SHORT_TXFR_DESC_SZ 0x1
 #define CMDQ_QUIRK_NO_DCMD	0x2
+#define CMDQ_QUIRK_PRIO_READ	(1<<2)
 
 	bool enabled;
 	bool halted;
@@ -204,6 +205,7 @@ struct cmdq_host_ops {
 	int (*reset)(struct mmc_host *mmc);
 	int (*crypto_cfg)(struct mmc_host *mmc, struct mmc_request *mrq,
 				u32 slot);
+	void (*crypto_cfg_reset)(struct mmc_host *mmc, unsigned int slot);
 	void (*post_cqe_halt)(struct mmc_host *mmc);
 	void (*pm_qos_update)(struct mmc_host *mmc, struct mmc_request *mrq,
 				bool enable);

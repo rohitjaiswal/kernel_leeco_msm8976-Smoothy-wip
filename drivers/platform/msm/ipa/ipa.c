@@ -169,9 +169,6 @@ struct ipa_ioc_nat_alloc_mem32 {
 static void ipa_start_tag_process(struct work_struct *work);
 static DECLARE_WORK(ipa_tag_work, ipa_start_tag_process);
 
-static void ipa_sps_process_irq(struct work_struct *work);
-static DECLARE_WORK(ipa_sps_process_irq_work, ipa_sps_process_irq);
-
 static void ipa_sps_release_resource(struct work_struct *work);
 static DECLARE_DELAYED_WORK(ipa_sps_release_resource_work,
 	ipa_sps_release_resource);
@@ -279,6 +276,55 @@ static int ipa_open(struct inode *inode, struct file *filp)
 	return 0;
 }
 
+/**
+* ipa_flow_control() - Enable/Disable flow control on a particular client.
+* Return codes:
+* None
+*/
+void ipa_flow_control(enum ipa_client_type ipa_client,
+		bool enable, uint32_t qmap_id)
+{
+	struct ipa_ep_cfg_ctrl ep_ctrl = {0};
+	int ep_idx;
+	struct ipa_ep_context *ep;
+
+	/* Check if ep is valid. */
+	ep_idx = ipa_get_ep_mapping(ipa_client);
+	if (ep_idx == -1) {
+		IPADBG("Invalid IPA client\n");
+		return;
+	}
+
+	ep = &ipa_ctx->ep[ep_idx];
+	if (!ep->valid || (ep->client != IPA_CLIENT_USB_PROD)) {
+		IPADBG("EP not valid/Not applicable for client.\n");
+		return;
+	}
+
+	spin_lock(&ipa_ctx->disconnect_lock);
+	/* Check if the QMAP_ID matches. */
+	if (ep->cfg.meta.qmap_id != qmap_id) {
+		IPADBG("Flow control ind not for same flow: %u %u\n",
+			ep->cfg.meta.qmap_id, qmap_id);
+		spin_unlock(&ipa_ctx->disconnect_lock);
+		return;
+	}
+	if (!ep->disconnect_in_progress) {
+		if (enable) {
+			IPADBG("Enabling Flow\n");
+			ep_ctrl.ipa_ep_delay = false;
+			IPA_STATS_INC_CNT(ipa_ctx->stats.flow_enable);
+		} else {
+			IPADBG("Disabling Flow\n");
+			ep_ctrl.ipa_ep_delay = true;
+			IPA_STATS_INC_CNT(ipa_ctx->stats.flow_disable);
+		}
+		ep_ctrl.ipa_ep_suspend = false;
+		ipa_cfg_ep_ctrl(ep_idx, &ep_ctrl);
+	} else
+		IPADBG("EP disconnect is in progress\n");
+	spin_unlock(&ipa_ctx->disconnect_lock);
+}
 static void ipa_wan_msg_free_cb(void *buff, u32 len, u32 type)
 {
 	if (!buff) {
@@ -2212,7 +2258,7 @@ static int ipa_setup_apps_pipes(void)
 	 * thread may nullify it - e.g. on EP disconnect.
 	 * This lock intended to protect the access to the source EP call-back
 	 */
-	spin_lock_init(&ipa_ctx->lan_rx_clnt_notify_lock);
+	spin_lock_init(&ipa_ctx->disconnect_lock);
 	if (ipa_setup_sys_pipe(&sys_in, &ipa_ctx->clnt_hdl_data_in)) {
 		IPAERR(":setup sys pipe failed.\n");
 		result = -EPERM;
@@ -2473,6 +2519,7 @@ void _ipa_enable_clks_v2_0(void)
 
 	if (smmu_clk)
 		clk_prepare_enable(smmu_clk);
+	ipa_suspend_apps_pipes(false);
 }
 
 void _ipa_enable_clks_v1_1(void)
@@ -2594,6 +2641,7 @@ void _ipa_disable_clks_v1_1(void)
 void _ipa_disable_clks_v2_0(void)
 {
 	IPADBG("disabling gcc_ipa_clk\n");
+	ipa_suspend_apps_pipes(true);
 	ipa_uc_notify_clk_state(false);
 	if (ipa_clk)
 		clk_disable_unprepare(ipa_clk);
@@ -2908,6 +2956,13 @@ static int ipa_init_flt_block(void)
 	return result;
 }
 
+static void ipa_sps_process_irq_schedule_rel(void)
+{
+	queue_delayed_work(ipa_ctx->sps_power_mgmt_wq,
+		&ipa_sps_release_resource_work,
+		msecs_to_jiffies(IPA_SPS_PROD_TIMEOUT_MSEC));
+}
+
 /**
 * ipa_suspend_handler() - Handles the suspend interrupt:
 * wakes up the suspended peripheral by requesting its consumer
@@ -2933,52 +2988,34 @@ void ipa_suspend_handler(enum ipa_irq_type interrupt,
 
 	for (i = 0; i < ipa_ctx->ipa_num_pipes; i++) {
 		if ((suspend_data & bmsk) && (ipa_ctx->ep[i].valid)) {
-			resource = ipa_get_rm_resource_from_ep(i);
-			res = ipa_rm_request_resource_with_timer(resource);
-			if (res == -EPERM &&
-				IPA_CLIENT_IS_CONS(ipa_ctx->ep[i].client)) {
-				holb_cfg.en = 1;
-				res = ipa_cfg_ep_holb_by_client(
-				   ipa_ctx->ep[i].client, &holb_cfg);
-				if (res) {
-					IPAERR("holb en fail,IPAHW stall\n");
-					BUG();
+			if (IPA_CLIENT_IS_APPS_CONS(ipa_ctx->ep[i].client)) {
+				/*
+				 * pipe will be unsuspended as part of
+				 * enabling IPA clocks
+				 */
+				ipa_inc_client_enable_clks();
+				ipa_ctx->sps_pm.dec_clients = true;
+				ipa_sps_process_irq_schedule_rel();
+			} else {
+				resource = ipa_get_rm_resource_from_ep(i);
+				res = ipa_rm_request_resource_with_timer(
+					resource);
+				if (res == -EPERM &&
+				    IPA_CLIENT_IS_CONS(
+					ipa_ctx->ep[i].client)) {
+					holb_cfg.en = 1;
+					res = ipa_cfg_ep_holb_by_client(
+					   ipa_ctx->ep[i].client, &holb_cfg);
+					if (res) {
+						IPAERR("holb en fail\n");
+						IPAERR("IPAHW stall\n");
+						BUG();
+					}
 				}
 			}
 		}
 		bmsk = bmsk << 1;
 	}
-}
-
-static void ipa_sps_process_irq_schedule_rel(void)
-{
-	ipa_ctx->sps_pm.res_rel_in_prog = true;
-	queue_delayed_work(ipa_ctx->sps_power_mgmt_wq,
-			   &ipa_sps_release_resource_work,
-			   msecs_to_jiffies(IPA_SPS_PROD_TIMEOUT_MSEC));
-}
-
-static void ipa_sps_process_irq(struct work_struct *work)
-{
-	unsigned long flags;
-	int ret;
-
-	/* request IPA clocks */
-	ipa_inc_client_enable_clks();
-
-	/* mark SPS resource as granted */
-	spin_lock_irqsave(&ipa_ctx->sps_pm.lock, flags);
-	ipa_ctx->sps_pm.res_granted = true;
-	IPADBG("IPA is ON, calling sps driver\n");
-
-	/* process bam irq */
-	ret = sps_bam_process_irq(ipa_ctx->bam_handle);
-	if (ret)
-		IPAERR("sps_process_eot_event failed %d\n", ret);
-
-	/* release IPA clocks */
-	ipa_sps_process_irq_schedule_rel();
-	spin_unlock_irqrestore(&ipa_ctx->sps_pm.lock, flags);
 }
 
 static int apps_cons_release_resource(void)
@@ -2993,19 +3030,16 @@ static int apps_cons_request_resource(void)
 
 static void ipa_sps_release_resource(struct work_struct *work)
 {
-	unsigned long flags;
-	bool dec_clients = false;
-
-	spin_lock_irqsave(&ipa_ctx->sps_pm.lock, flags);
 	/* check whether still need to decrease client usage */
-	if (ipa_ctx->sps_pm.res_rel_in_prog) {
-		dec_clients = true;
-		ipa_ctx->sps_pm.res_rel_in_prog = false;
-		ipa_ctx->sps_pm.res_granted = false;
+	if (ipa_ctx->sps_pm.dec_clients) {
+		if (atomic_read(&ipa_ctx->sps_pm.eot_activity)) {
+			ipa_sps_process_irq_schedule_rel();
+		} else {
+			ipa_ctx->sps_pm.dec_clients = false;
+			ipa_dec_client_disable_clks();
+		}
 	}
-	spin_unlock_irqrestore(&ipa_ctx->sps_pm.lock, flags);
-	if (dec_clients)
-		ipa_dec_client_disable_clks();
+	atomic_set(&ipa_ctx->sps_pm.eot_activity, 0);
 }
 
 int ipa_create_apps_resource(void)
@@ -3031,62 +3065,7 @@ int ipa_create_apps_resource(void)
 	return result;
 }
 
-/**
- * sps_event_cb() - Handles SPS events
- * @event: event to handle
- * @param: event-specific paramer
- *
- * This callback support the following events:
- *	- SPS_CALLBACK_BAM_RES_REQ: request resource
- *		Try to increase IPA active client counter.
- *		In case this can be done synchronously then
- *		return in *param true. Otherwise return false in *param
- *		and request IPA clocks. Later call to
- *		sps_bam_process_irq to process the pending irq.
- *	- SPS_CALLBACK_BAM_RES_REL: release resource
- *		schedule a delayed work for decreasing IPA active client
- *		counter. In case that during this time another request arrives,
- *		this work will be canceled.
- */
-static void sps_event_cb(enum sps_callback_case event, void *param)
-{
-	unsigned long flags;
 
-	spin_lock_irqsave(&ipa_ctx->sps_pm.lock, flags);
-
-	switch (event) {
-	case SPS_CALLBACK_BAM_RES_REQ:
-	{
-		bool *ready = (bool *)param;
-
-		/* make sure no release will happen */
-		cancel_delayed_work(&ipa_sps_release_resource_work);
-		ipa_ctx->sps_pm.res_rel_in_prog = false;
-
-		if (ipa_ctx->sps_pm.res_granted) {
-			*ready = true;
-		} else {
-			if (ipa_inc_client_enable_clks_no_block() == 0) {
-				ipa_ctx->sps_pm.res_granted = true;
-				*ready = true;
-			} else {
-				queue_work(ipa_ctx->sps_power_mgmt_wq,
-					   &ipa_sps_process_irq_work);
-				*ready = false;
-			}
-		}
-		break;
-	}
-
-	case SPS_CALLBACK_BAM_RES_REL:
-		ipa_sps_process_irq_schedule_rel();
-		break;
-	default:
-		IPADBG("unsupported event %d\n", event);
-	}
-
-	spin_unlock_irqrestore(&ipa_ctx->sps_pm.lock, flags);
-}
 /**
 * ipa_init() - Initialize the IPA Driver
 * @resource_p:	contain platform specific values from DST file
@@ -3264,10 +3243,6 @@ static int ipa_init(const struct ipa_plat_drv_res *resource_p,
 		goto fail_create_sps_wq;
 	}
 
-	spin_lock_init(&ipa_ctx->sps_pm.lock);
-	ipa_ctx->sps_pm.res_granted = false;
-	ipa_ctx->sps_pm.res_rel_in_prog = false;
-
 	/* register IPA with SPS driver */
 	bam_props.phys_addr = resource_p->bam_mem_base;
 	bam_props.virt_size = resource_p->bam_mem_size;
@@ -3278,13 +3253,11 @@ static int ipa_init(const struct ipa_plat_drv_res *resource_p,
 	bam_props.options |= SPS_BAM_NO_LOCAL_CLK_GATING;
 	if (ipa_ctx->ipa_hw_mode != IPA_HW_MODE_VIRTUAL)
 		bam_props.options |= SPS_BAM_OPT_IRQ_WAKEUP;
-	bam_props.options |= SPS_BAM_RES_CONFIRM;
 	if (ipa_ctx->ipa_bam_remote_mode == true)
 		bam_props.manage |= SPS_BAM_MGR_DEVICE_REMOTE;
 	if (ipa_ctx->smmu_present)
 		bam_props.options |= SPS_BAM_SMMU_EN;
 	bam_props.ee = resource_p->ee;
-	bam_props.callback = sps_event_cb;
 
 	result = sps_register_bam_device(&bam_props, &ipa_ctx->bam_handle);
 	if (result) {
@@ -4144,15 +4117,6 @@ static int ipa_ap_suspend(struct device *dev)
 	int i;
 
 	IPADBG("Enter...\n");
-	/*
-	 * In case SPS requested IPA resources fail to suspend.
-	 * This can happen if SPS driver is during the processing of
-	 * IPA BAM interrupt
-	 */
-	if (ipa_ctx->sps_pm.res_granted && !ipa_ctx->sps_pm.res_rel_in_prog) {
-		IPAERR("SPS resource is granted, do not suspend\n");
-		return -EAGAIN;
-	}
 
 	/* In case there is a tx/rx handler in polling mode fail to suspend */
 	for (i = 0; i < ipa_ctx->ipa_num_pipes; i++) {
@@ -4165,6 +4129,7 @@ static int ipa_ap_suspend(struct device *dev)
 	}
 
 	/* release SPS IPA resource without waiting for inactivity timer */
+	atomic_set(&ipa_ctx->sps_pm.eot_activity, 0);
 	ipa_sps_release_resource(NULL);
 	IPADBG("Exit\n");
 
